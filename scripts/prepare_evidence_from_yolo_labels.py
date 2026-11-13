@@ -10,7 +10,24 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from main.config import ROOT
-from main.evidence import collect_images, parse_yolo_label, write_evidence, write_manifest
+from main.evidence import CLASS_NAMES, collect_images, parse_yolo_label, write_evidence, write_manifest
+
+
+def validate_dataset_classes(dataset_root: Path) -> None:
+    config_path = dataset_root / "data.yaml"
+    if not config_path.is_file():
+        return  # Retain support for older datasets without a YAML config.
+    import yaml
+
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    names = config.get("names") if isinstance(config, dict) else None
+    if isinstance(names, dict):
+        names = [names.get(index, names.get(str(index))) for index in range(len(names))]
+    if names != CLASS_NAMES:
+        raise ValueError(
+            f"Dataset classes {names!r} do not match this six-class evidence pipeline: {CLASS_NAMES}. "
+            "Keep independent datasets and class IDs separate; this dataset can use train_yolo.py or base mode."
+        )
 
 
 def main() -> None:
@@ -24,6 +41,7 @@ def main() -> None:
     args = parser.parse_args()
     if args.limit <= 0 or args.min_classes < 0:
         parser.error("--limit must be positive and --min-classes must be nonnegative")
+    validate_dataset_classes(args.dataset_root)
     from PIL import Image
 
     image_dir = args.dataset_root / "images" / args.split

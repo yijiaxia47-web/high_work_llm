@@ -31,19 +31,28 @@
 │   ├── fill_local_gold_draft.py
 │   ├── finalize_gold_from_review.py
 │   ├── attach_gold_to_manifest.py
-│   └── offline_rescore_oracle_ablation.py
+│   ├── offline_rescore_oracle_ablation.py
+│   ├── migrate_experiments.py     # 迁移预检、复制与哈希核验
+│   ├── migrate_harness_dataset.py # 独立四类安全带数据集迁移与核验
+│   └── run_*.cmd                 # Windows 快捷入口
 ├── llm/                          # 已有模型调用层与 Provider
 ├── data/                         # 本地数据；目录约定见下文
-│   ├── datasets/work_at_height/   # 原图、YOLO 标签、data.yaml
-│   ├── evidence/                 # oracle/、predicted/ 四源证据
+│   ├── datasets/work_at_height/   # DST2189：六类，12,712 张原图
+│   ├── datasets/harness_wearing/  # 安全带佩戴检测：四类，1,884 张原图
+│   ├── evidence/                 # oracle/、oracle_001/、predicted/ 四源证据
 │   ├── gold/                     # 人工复核后的参考标签
+│   ├── review/legacy/            # 历史 gold.zip 解包副本
 │   └── weights/                  # 迁入的检测器权重
-├── outputs/                      # 运行时生成：实验、训练、标注草稿结果
+├── outputs/                      # 实验、训练、标注草稿结果
+│   ├── legacy/                   # 原始实验文件与旧脚本的逐字节归档
+│   ├── gold_draft_legacy/        # 路径已更新的草稿与人工复核 CSV
+│   ├── migration_experiments/    # 第一批迁移报告与逐文件 SHA-256 清单
+│   └── migration_harness_wearing/ # 独立安全带数据集迁移报告
 ├── tests/                        # 无真实 API 调用的检查
 ├── requirements.txt              # 主流程与证据处理依赖
 ├── requirements-yolo.txt         # YOLO 训练／推理依赖
 ├── .env.example                  # 模型服务配置模板
-├── experiments/                  # 原始实验存档，保留不动 *
+├── experiments/                  # 迁移后保留的原件，核验通过后可手工删除
 └── input_demo/                   # 原始输入目录，保留不动 *
 ```
 
@@ -88,7 +97,7 @@ python -m pip install -r requirements-yolo.txt
 
 现有场景图使用框包含关系和归一化中心距离关联目标。规则层提供候选证据，挂钩连接与安全带规范使用仍保留 `unclear`，交由图像核查；“检测到安全带”不能直接等同于“规范使用安全带”。
 
-数据目录按以下布局准备；仓库没有附带实际图像、YOLO 标签或训练权重：
+数据目录按以下布局准备；实际图像、YOLO 标签、参考标签和历史结果均为本地文件，受 `.gitignore` 排除，不随 Git 仓库分发。本地迁移已复制主数据集的 12,712 张原图及对应 YOLO 标签，未发现已有检测权重：
 
 ```text
 data/datasets/work_at_height/
@@ -103,7 +112,46 @@ data/datasets/work_at_height/
     └── test/
 ```
 
-同一图片和 YOLO 标签使用相同文件主名，例如 `images/valid/a.jpg` 对应 `labels/valid/a.txt`。现有标注类别顺序固定为 `mewp, person, harness, helmet, scaffolding, ladder`；迁移时保留顺序，避免类别编号错位。
+同一图片和 YOLO 标签使用相同文件主名，例如 `images/valid/a.jpg` 对应 `labels/valid/a.txt`。DST2189 的标注类别顺序固定为 `mewp, person, harness, helmet, scaffolding, ladder`；迁移时保留顺序，避免类别编号错位。
+
+### 独立的安全带佩戴检测数据集
+
+`高空作业安全带佩戴检测` 独立迁入 `data/datasets/harness_wearing/`，与 DST2189 分开存放。共 1,884 对图像／YOLO 标签：train 1,507 对、val 188 对、test 189 对。原有文件名、`val` 目录名和 `labels/labels.txt` 原样保留，另补充自己的 `data.yaml`。
+
+| 类别编号 | 原始类别名称 |
+|---|---|
+| 0 | `aqd_cdgf` |
+| 1 | `aqd_gfsy` |
+| 2 | `aqd_wpd` |
+| 3 | `aqd_wzqpd` |
+
+```text
+data/datasets/harness_wearing/
+├── data.yaml                 # nc: 4，保留上述类别顺序
+├── images/{train,val,test}/
+└── labels/
+    ├── labels.txt            # 原始类别定义文件
+    └── {train,val,test}/
+```
+
+训练时显式选择本数据集配置与独立运行目录：
+
+```bash
+python scripts/train_yolo.py --data data/datasets/harness_wearing/data.yaml --model yolo11s.pt --project outputs/yolo/harness_wearing --name yolo11s_harness_wearing
+
+# 仅检查这份数据的原图基线输入，不调用 API
+python scripts/run_ablation.py --image-dir data/datasets/harness_wearing/images/val --mode base --outdir outputs/harness_wearing/check_base --limit 20 --dry-run
+```
+
+当前四源证据生成器使用 DST2189 的六类语义；标注框入口会检查 `data.yaml` 的类别及顺序，并拒绝这份四类数据，防止误读编号。本数据集暂无四源证据或人工推理参考标签；现有 `data/evidence/oracle/`、`oracle_001/` 和 `data/gold/` 均属于 DST2189。训练及实验时分别选择对应数据集的配置、输入和输出目录。
+
+本次迁移保留 `input_demo/originals/高空作业安全带佩戴检测/` 原件。全部 3,769 个原文件（1,884 张图像、1,884 份标签及 1 份类别定义）复制后均比较 SHA-256；报告和逐文件清单位于 `outputs/migration_harness_wearing/`。可执行：
+
+```bash
+python scripts/migrate_harness_dataset.py             # 只读预检
+python scripts/migrate_harness_dataset.py --apply     # 复制并逐文件校验，遇到内容冲突时报错
+python scripts/migrate_harness_dataset.py --verify    # 根据保存的清单重新核验
+```
 
 ### 由标注框准备证据（oracle）
 
@@ -227,7 +275,9 @@ python scripts/fill_local_gold_draft.py --manifest data/evidence/oracle/manifest
 
 ## 主要结果与指标
 
-当前仓库没有可核验的 `raw_results.jsonl`、`summary.json` 或 YOLO 训练评估文件，因此暂不填写准确率、F1 或“full 优于 base”等数值结论。可确认的历史产物是 `experiments/runs/gold_draft_001/gold.zip`，其中有 20 个标签 JSON、36 个人员条目；仓库未包含对应的完整人工复核记录，迁入使用前应核对原图、编号和标注来源。
+本地历史 `raw_results.jsonl`、`summary.json`、比较表及复评分结果已逐字节迁入 `outputs/legacy/<原目录名>/`。历史配置和评分口径保持原样，不将它们视为当前主流程的新实验结果，也不在此据此填写“full 优于 base”等结论。当前未发现 YOLO 训练评估文件或检测权重。
+
+迁入 `data/gold/` 的 20 个标签包含 36 个人员条目：`gold_review_queue_local.csv` 的全部 36 行均标为 `checked`，用新导出脚本重建的内容与历史 `gold/`、`gold.zip` 一致，且人员编号与原证据一致。复核 CSV 工作副本位于 `outputs/gold_draft_legacy/`，原编码、原路径版本及压缩包保留在 `outputs/legacy/gold_draft_001/`。原始队列和 API 草稿队列仍为 `pending`，迁移保留其状态。
 
 正式运行输出如下：
 
@@ -244,50 +294,46 @@ python scripts/fill_local_gold_draft.py --manifest data/evidence/oracle/manifest
 
 评分采用严格结构要求：任一结构校验失败，该次预测的全部字段准确率记为 0；API 失败与无效调用仍保留在相应分母中。无效输出不视为重复一致的有效证据，单次调用没有重复一致性指标。不同实验保留 oracle／predicted 设置、样本筛选条件及 gold 来源，避免将教师输出一致率当作真实安全识别准确率。
 
-## 服务器数据迁移（完成后可删除此节）
+## 本地无损迁移与后续清理
 
-下面的旧路径来自现有脚本及旧 README，均以旧项目根目录为基准。旧 `.cmd` 中唯一明确的绝对项目路径是 Windows 的 `D:\多模态小论文`；仓库没有记录服务器的 Linux 绝对路径。请将下列命令中的 `/实际服务器旧项目目录` 换成真实位置，本次重构未执行数据搬迁。
+迁移只复制文件，不删除原件，不覆盖内容不同的目标。两批 oracle 证据直接保留原有编号图、场景图、规则和样本编号，仅更新工作 manifest 的路径，避免重新生成导致历史实验样本发生变化。新路径对应关系如下：
 
-| 原位置／历史约定 | 新位置 | 操作 |
-|---|---|---|
-| `input_demo/originals/Work at Height Safety Datase(DST2189)/images/` | `data/datasets/work_at_height/images/` | 复制 train、valid、test 图像，保留文件名 |
-| `input_demo/originals/Work at Height Safety Datase(DST2189)/labels/` | `data/datasets/work_at_height/labels/` | 复制对应 YOLO 标签，保留类别编号 |
-| 同一旧数据集目录下的 `data.yaml` | `data/datasets/work_at_height/data.yaml` | 保留六类名称顺序，补全新根路径及三个 split |
-| `experiments/runs/oracle_evidence_001/` 或 `oracle_evidence_002/` | `data/evidence/oracle/` | 优先在迁入图像／标签后重新生成 |
-| `experiments/runs/pred_evidence_001/` | `data/evidence/predicted/` | 用迁入权重和图像重新生成 |
-| `experiments/runs/yolo11s_rebuild/weights/best.pt` | `data/weights/best.pt` | 复制已有检测权重；完整训练产物可存 `outputs/legacy/yolo11s_rebuild/` |
-| `experiments/runs/gold_draft_001/gold/` | `data/gold/` | 仅在核实人工复核与样本编号后复制 |
-| `experiments/runs/gold_draft_001/gold.zip` | `data/review/legacy/gold/` | 解压至待核查目录，确认后再放入 `data/gold/` |
-| 历史 `raw_baseline_001/`、`oracle_ablation_001/`、`pred_ablation_001/` | `outputs/legacy/<原目录名>/` | 复制历史结果归档，保留原始配置和文件 |
-| 历史 `llm/.env` | 根目录 `.env` | 手工迁入有效配置；新入口统一使用根目录配置 |
+| 原位置 | 新位置 |
+|---|---|
+| `input_demo/originals/Work at Height Safety Datase(DST2189)/images/`、`labels/` | `data/datasets/work_at_height/images/`、`labels/` |
+| `experiments/runs/oracle_evidence_002/` | `data/evidence/oracle/`（20 个样本，含 gold 清单） |
+| `experiments/runs/oracle_evidence_001/` | `data/evidence/oracle_001/`（2 个样本，单独保留） |
+| `experiments/runs/gold_draft_001/gold/` | `data/gold/`（已通过复核记录一致性检查） |
+| `experiments/runs/gold_draft_001/gold.zip` | 原包归档至 `outputs/legacy/gold_draft_001/gold.zip`，解包副本放入 `data/review/legacy/gold/` |
+| `experiments/runs/gold_draft_001/` 的 CSV、`draft_json/` | `outputs/gold_draft_legacy/`（更新图片路径，CSV 统一 UTF-8 BOM，保留人工字段与复核状态） |
+| `experiments/runs/` 的全部文件，包括历史清单、配置、原始响应、日志、独立比较表 | `outputs/legacy/<原相对路径>/`（原始字节不变） |
+| `experiments/` 顶层脚本、示例清单和缓存 | `outputs/legacy/scripts/`（原件存档；日常使用 `scripts/` 与 `main/`） |
 
-迁移图像与标签示例：
+`input_demo/` 中的 VOC 标注、原始压缩包以及两套数据集的原件继续保留原位，不在本次清理范围。安全带佩戴检测数据集的独立迁移见前文；DST2189 的六类名称顺序及现有 `data.yaml` 模板保持不变，未迁移或改写 `.env`。本地没有 predicted 证据和 YOLO 权重，后续按前文命令生成。
+
+迁移工具以当前本地这批目录为对象；缺少源文件、复核记录不一致或目标内容冲突时会报错，不自动猜测处理。以下命令在项目根目录执行，支持 Windows 和 Linux：
 
 ```bash
-SERVER_PROJECT="D:\多模态小论文"
-mkdir -p data/datasets/work_at_height/images data/datasets/work_at_height/labels data/weights
-rsync -a "$SERVER_PROJECT/input_demo/originals/Work at Height Safety Datase(DST2189)/images/" data/datasets/work_at_height/images/
-rsync -a "$SERVER_PROJECT/input_demo/originals/Work at Height Safety Datase(DST2189)/labels/" data/datasets/work_at_height/labels/
+# 只读预检：核对复核记录、计算哈希并检查全部目标冲突
+python scripts/migrate_experiments.py
 
-# 若服务器已有训练权重
-cp "$SERVER_PROJECT/experiments/runs/yolo11s_rebuild/weights/best.pt" data/weights/best.pt
+# 执行复制并自动校验；重复执行可复用内容相同的文件
+python scripts/migrate_experiments.py --apply
 
-# 检查仓库现有标签压缩包，原压缩包保留
-python -m zipfile -e experiments/runs/gold_draft_001/gold.zip data/review/legacy
+# 删除 experiments 前再次核验；删除后也可用此命令检查迁入副本
+python scripts/migrate_experiments.py --verify
+
+# 只用迁入后的文件检查完整六条件，不调用 API
+python scripts/run_ablation.py --manifest data/evidence/oracle/manifest_with_gold.json --mode leave_one_out --outdir outputs/check_migrated --dry-run
 ```
 
-旧 `data.yaml` 只有 `names` 和 `nc`，不足以直接训练。仓库的新模板已补全如下内容，`path: .` 经新训练入口解析为此 YAML 所在目录；也可以改成迁移后数据集的实际绝对路径：
+核验结果记录在 `outputs/migration_experiments/report.json` 与 `files.csv`；后者逐项列出原路径、新路径、字节数和 SHA-256。`--verify` 同时检查原目录是否新增或修改文件，以及工作清单是否仍依赖 `experiments/` 或 `input_demo/`。日后修改工作文件会使历史哈希核验失败，这是预期行为；如需删除原目录，先核验并保留报告和完整归档。迁入文件和归档均受 `.gitignore` 排除，需要随项目另行备份，不能仅依靠 Git。
 
-```yaml
-path: .
-train: images/train
-val: images/valid
-test: images/test
-nc: 6
-names: [mewp, person, harness, helmet, scaffolding, ladder]
-```
+`outputs/migration_experiments/validation.json` 记录额外离线检查：禁止读取两个旧目录后，20 个样本的六条件 dry-run 通过；三份复核队列共 92 行的人工字段、复核状态和备注保持一致，20 份草稿的原始响应保持一致；三个 split 的图像与标签主名全部配对。两个实验 `.cmd` 入口也已通过 dry-run，未调用 API。
 
-旧证据生成器会把本机绝对路径写入 manifest，直接复制到服务器后通常失效。建议迁移完成后重新运行证据准备和 gold 挂接命令；如必须保留旧证据，逐项更新 manifest 中四源及 `gold` 路径，并用 `--dry-run` 校验。历史 `config.json` 作为归档保留，不要改成看似在新环境中运行的记录。
+旧 Python 功能已由 `scripts/` 同名工具和 `main/` 公共模块承接；`four_source_ablation_demo.py` 对应 `scripts/run_ablation.py`，`raw_only_baseline.py` 对应其 `--mode base`。旧参数 `--conditions leave_one_out` 对应新参数 `--mode leave_one_out`。历史脚本保留用于溯源，存档中的绝对路径不修改、不作为运行入口。
+
+Windows 快捷入口为 `scripts/run_oracle_ablation.cmd`、`scripts/run_raw_baseline.cmd` 和 `scripts/run_prepare_oracle_demo.cmd`，使用相对项目位置及根目录 `.env`。前两者会调用 API，可追加 `--dry-run` 预检；证据准备入口默认输出到 `data/evidence/oracle_regenerated/`，保留迁入的证据。运行结果目录已有文件时需另选 `--outdir`。
 
 ## 本地验证
 

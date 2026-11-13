@@ -1,4 +1,4 @@
-"""Train the Work-at-Height YOLO detector."""
+"""Train a YOLO detector using the selected dataset's own class definitions."""
 
 from __future__ import annotations
 

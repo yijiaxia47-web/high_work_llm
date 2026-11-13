@@ -1,0 +1,11 @@
+# Independent harness-wearing dataset; retain original class IDs and val split.
+path: .
+train: images/train
+val: images/val
+test: images/test
+nc: 4
+names:
+  - "aqd_cdgf"
+  - "aqd_gfsy"
+  - "aqd_wpd"
+  - "aqd_wzqpd"
